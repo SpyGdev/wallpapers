@@ -1,0 +1,103 @@
+name: Convert previews to GIF
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'previews/*.mov'
+      - 'previews/*.MOV'
+      - 'previews/**/*.mov'
+      - 'previews/**/*.MOV'
+      - '.github/workflows/convert-previews.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-gif-conversion
+  cancel-in-progress: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+          ffmpeg -version | head -n 1
+
+      - name: Convert previews
+        id: convert
+        shell: bash
+        run: |
+          set -uo pipefail
+          output_dir="$RUNNER_TEMP/generated-gifs"
+          log_dir="$RUNNER_TEMP/conversion-logs"
+          mkdir -p "$output_dir" "$log_dir"
+          report="$log_dir/summary.txt"
+          : > "$report"
+          total=0
+          succeeded=0
+          failed=0
+
+          while IFS= read -r -d '' source; do
+            total=$((total + 1))
+            filename=${source##*/}
+            stem=${filename%.*}
+            output="$output_dir/$stem.gif"
+            palette="$RUNNER_TEMP/$stem.palette.png"
+            log="$log_dir/$stem.log"
+            printf 'Converting %s\n' "$filename"
+
+            if ffmpeg -nostdin -hide_banner -loglevel error -y -i "$source" \
+              -vf 'fps=10,scale=360:-2:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither=sierra2_4a' \
+              -map 0:v:0 -an -loop 0 "$output.tmp.gif" > /dev/null 2>"$log"; then
+              if [ -s "$output.tmp.gif" ]; then
+                mv "$output.tmp.gif" "$output"
+                succeeded=$((succeeded + 1))
+                size=$(du -h "$output" | cut -f1)
+                printf 'OK: %s -> %s (%s)\n' "$filename" "${stem}.gif" "$size" | tee -a "$report"
+              else
+                failed=$((failed + 1))
+                printf 'FAIL: %s produced no output\n' "$filename" | tee -a "$report"
+                printf '::error file=%s::FFmpeg produced no GIF output\n' "$source"
+                rm -f "$output.tmp.gif"
+              fi
+            else
+              failed=$((failed + 1))
+              printf 'FAIL: %s\n' "$filename" | tee -a "$report"
+              printf '::error file=%s::FFmpeg could not convert this preview; see the uploaded log\n' "$source"
+              rm -f "$output.tmp.gif"
+            fi
+            rm -f "$palette"
+          done < <(find previews -maxdepth 1 -type f -iname '*.mov' -print0 | sort -z)
+
+          {
+            printf '\nTotals: %d found, %d succeeded, %d failed\n' "$total" "$succeeded" "$failed"
+            if [ "$failed" -gt 0 ]; then
+              printf 'Failed files may use an unsupported codec (for example HEVC).\n'
+            fi
+          } | tee -a "$report"
+          echo "output_dir=$output_dir" >> "$GITHUB_OUTPUT"
+          echo "log_dir=$log_dir" >> "$GITHUB_OUTPUT"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          if [ "$total" -eq 0 ]; then
+            echo 'No .mov previews were found.' >&2
+            exit 1
+          fi
+          if [ "$failed" -gt 0 ]; then exit 1; fi
+
+      - name: Upload GIFs and conversion logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-gifs
+          path: |
+            ${{ steps.convert.outputs.output_dir }}
+            ${{ steps.convert.outputs.log_dir }}
+          if-no-files-found: error
+          retention-days: 14

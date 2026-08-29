@@ -1,30 +1,43 @@
-# Preview to GIF
+# wallpapers
 
-A static GitHub Pages app that converts the repository's short video previews to GIFs in the browser. Files stay on the device; there is no upload service or backend.
+## Convert previews to GIF
 
-## Use on GitHub Pages
+This repository includes a GitHub Actions workflow that converts every video in `previews/` into a downloadable GIF.
 
-1. Push this repository to GitHub.
-2. Open **Settings → Pages**, choose **Deploy from a branch**, select `main` and `/ (root)`, then save.
-3. Open the Pages URL GitHub provides. The app uses relative asset paths, so project Pages URLs work.
+### Run it
 
-Choose a checked-in preview, or choose/drop a local `.mov`, `.mp4`, or `.webm`. Adjust the trim, width, frame rate, quality, and loop settings, then select **Convert to GIF** and download the result.
+1. Open the repository's **Actions** tab on GitHub.
+2. Select **Convert previews to GIF**.
+3. Choose **Run workflow** and confirm.
+4. When the job finishes, open the run summary and download the **preview-gifs** artifact.
 
-## Test locally
+The workflow also runs automatically when a `.mov` file is added or changed under `previews/`.
 
-Serve the repository over HTTP (opening `index.html` directly will prevent the manifest from loading):
+### Output
+
+Each source produces a GIF with the same filename stem—for example, `previews/Snoopy 2.mov` becomes `Snoopy 2.gif`. Conversion uses FFmpeg with:
+
+- 10 frames per second
+- 360px output width, preserving the original aspect ratio
+- Lanczos scaling and a generated 256-color palette
+- Infinite looping
+- Audio removed (GIF does not support audio)
+
+GIFs and conversion logs are uploaded as the `preview-gifs` Actions artifact for 14 days. They are intentionally not committed to the repository, so running the workflow does not create binary diffs or trigger itself again.
+
+### Failures
+
+A failed preview does not stop the remaining conversions. The artifact includes a summary and individual FFmpeg logs, while the workflow is marked failed if any input could not be converted. This makes codec problems—such as a runner failing to decode the HEVC video `Purplepills.mov`—visible without losing successful outputs.
+
+Only `previews/*.mov` files are processed. The `.tendies` archives in `downloads/` are not video inputs.
+
+### Local testing
+
+The same conversion pipeline requires FFmpeg locally. For one preview:
 
 ```sh
-python3 -m http.server 8000
+mkdir -p generated-gifs
+ffmpeg -i "previews/Snoopy 2.mov" \
+  -vf 'fps=10,scale=360:-2:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither=sierra2_4a' \
+  -map 0:v:0 -an -loop 0 generated-gifs/'Snoopy 2.gif'
 ```
-
-Then open <http://localhost:8000/>.
-
-## Notes
-
-- Conversion is performed locally with the browser's video decoder, canvas, and a vendored `gif.js` encoder. Video files are not sent anywhere.
-- GIFs have no audio and use a 256-color palette. Lowering width, frame rate, or clip length produces smaller files.
-- The app limits output width to 480 pixels and output to 300 frames to avoid exhausting browser memory.
-- Browser support for QuickTime containers and codecs varies. Most H.264 previews work in modern browsers; `Purplepills.mov` uses HEVC and may require Safari. If a preview cannot load, use an H.264 MP4/WebM copy or a different browser.
-- The `.tendies` files in `downloads/` are not used by this converter.
-- Generated GIFs are held in memory and are not added to the repository.
